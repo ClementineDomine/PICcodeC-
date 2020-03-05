@@ -1,5 +1,5 @@
 /*
-Written by: Daniel Duque
+Written by: Daniel Duque and Clementine Domine
 Last modified on 10 Dec 2019
 Declarations for the Plasma class
 This file contains a corresponding source file.

@@ -1,5 +1,5 @@
 /**
-Written by: Clementine Domine
+Written by: Daniel Duque and Clementine Domine
 Last modified on 28 fev 2020
 
 Main file for plasma simulation.
