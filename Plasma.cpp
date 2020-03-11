@@ -11,9 +11,6 @@ This file contains a corresponding source file.
 MacroRing::MacroRing(int r, double z, double aSpeed) : posR(r), posZ(z), speed(aSpeed)
 {
 }
-MacroRing::~MacroRing()
-{
-}
 int MacroRing::getR() const
 {
     return posR;
@@ -93,19 +90,8 @@ void Plasma::updateRHS()
         int indexRHS{ (refTrap.Nz + 1) * indexR + indexZ };
         double z{ aRing.getZ() - indexZ * hz };//Distance from left grid point to particle
         double weightFactor{ z / hz };//Weight going to grid point on the right (number between 0 and 1)
-        double volume; //Volume of the MacroRing
-        if (indexR == 0)
-        {
-            volume = PI * hz * hr * hr / 4;
-        }
-        else
-        {
-            volume = hz * hr * 2 * PI * indexR * hr;
-        }
-        double specificCharge{aRing.getR() == 0 ? chargeMacro : 8 * chargeMacro * aRing.getR()};
-        
-        RHS.coeffRef(indexRHS) += -specificCharge * (1 - weightFactor) / (volume * epsilon);//Point to the left
-        RHS.coeffRef(indexRHS + 1) += -specificCharge* weightFactor / (volume * epsilon);//Point to the right
+        RHS.coeffRef(indexRHS) += -macroChargeDensity * (1 - weightFactor) / epsilon;//Point to the left
+        RHS.coeffRef(indexRHS + 1) += -macroChargeDensity * weightFactor / epsilon;//Point to the right
     }
 }
 void Plasma::solvePoisson()
@@ -119,11 +105,9 @@ void Plasma::moveRings(double deltaT)
     {
         //Leapfrog method
         
-        double specificCharge{rings[i].getR() == 0 ? chargeMacro : 8 * chargeMacro * rings[i].getR()};
-        double specificMass{rings[i].getR() == 0 ? massMacro : 8 * massMacro * rings[i].getR()};
         
-        double forceOld{ specificCharge * refTrap.getEField(rings[i].getR(), rings[i].getZ()) };
-        double vNew{ deltaT * forceOld / specificMass + rings[i].getSpeed() };
+        
+        double vNew{ deltaT * refTrap.getEField(rings[i].getR(), rings[i].getZ()) * charge / mass + rings[i].getSpeed() };
         double zNew{ deltaT * vNew + rings[i].getZ() };
         //remove elements than escape the trap
         if (zNew < refTrap.getLength() && zNew > 0)
@@ -153,7 +137,6 @@ void Plasma::extractPlasmaParameters(std::string fileName) const
     newFile.open(fileName);
     newFile << mass << '\n';
     newFile << charge << '\n';
-    newFile << massMacro << '\n';
     newFile << chargeMacro;
     newFile.close();
 }
@@ -170,6 +153,16 @@ void Plasma::extractHistory(std::string preName) const
     newPositions.close();
     newSpeeds.close();
 }
+
+double Plasma::getPotentialEnergy() const
+{
+    double potentialEnergy{ 0 };
+    for (const MacroRing& aRing : rings)
+    {
+        potentialEnergy += refTrap.getTotalPhi(aRing.getR(), aRing.getZ()) * (aRing.getR() == 0 ? chargeMacro : aRing.getR() * 8 * chargeMacro);
+    }
+    return potentialEnergy / 2;
+}
 void Plasma::saveState()
 {
     for (MacroRing& aRing : rings)
@@ -184,20 +177,20 @@ void Plasma::reserve(int desired)
         aRing.reserve(desired);
     }
 }
-void Plasma::loadOneDUniform(int numMacro, double aChargeMacro, double lengthLine, int r)
+void Plasma::loadOneDUniform(int numMacro, double aTotalCharge, double lengthLine, int r)
 {
     //Creates equally spaced charges at r = 0 along a centred line of length lengthLine
     if (lengthLine >= refTrap.getLength() || r >= refTrap.Nr - 1)
     {
         throw std::logic_error("Length of charge must be less than the length of the trap and r inside the trap");
     }
-    if (aChargeMacro * charge < 0)
+    if (aTotalCharge * charge < 0)
     {
         throw std::logic_error("Charge of MacroRing and the plasma type must have the same sign");
     }
-    
-    chargeMacro = aChargeMacro;
-    massMacro = mass *  chargeMacro / charge;
+    aTotalCharge /= numMacro; //Charge of a single macro-ring
+    chargeMacro = r == 0 ? aTotalCharge : aTotalCharge / (8 * r);
+    macroChargeDensity = 4 * chargeMacro / (PI * refTrap.hz * refTrap.hr * refTrap.hr);
     rings.clear();
     rings.reserve(numMacro);
     //Divide lengthLine in numMacro + 1 cells, which corresponds to numMacro + 2 points
@@ -210,18 +203,18 @@ void Plasma::loadOneDUniform(int numMacro, double aChargeMacro, double lengthLin
     }
     solvePoisson();
 }
-void Plasma::loadSingleRing(double aChargeMacro, int r, double Z, double speed)
+void Plasma::loadSingleRing(double aTotalCharge, int r, double Z, double speed)
 {
     if (Z >= refTrap.getLength() || Z <= 0 || r >= refTrap.Nr - 1)
     {
         throw std::logic_error("Input r,z is not inside the trap");
     }
-    if (aChargeMacro * charge < 0)
+    if (aTotalCharge * charge < 0)
     {
         throw std::logic_error("Charge of MacroRing and the plasma type must have the same sign");
     }
-
-    massMacro = mass * chargeMacro/ charge;
+    chargeMacro = r == 0 ? aTotalCharge : aTotalCharge / (8 * r);
+    macroChargeDensity = 4 * chargeMacro / (PI * refTrap.hz * refTrap.hr * refTrap.hr);
     rings.clear();
     rings.push_back(MacroRing(r, Z, speed));
     solvePoisson();
@@ -301,7 +294,8 @@ std::vector<double> Potentialenergy;
         double phitrapright =refTrap.potentialsVector(indexZ+1+(r*(refTrap.Nz+1)));
         double phiTraptot= phitrapleft*(1 - weightFactor)+phitrapright*(weightFactor);//Point to the left
         
-        double specificCharge{r== 0 ? chargeMacro : 8 * chargeMacro * r};
+        double
+        specificCharge{r== 0 ? chargeMacro : 8 * chargeMacro * r};
         double phireal= specificCharge*(ps);
         Potentialenergy.push_back(phireal);
                                                         
@@ -311,10 +305,10 @@ std::vector<double> Potentialenergy;
 
 void Plasma::extracttotalpotentialenergy(std::string fileName, int r,double Z)
  {
-     std::ofstream newFile;
+    std::ofstream newFile;
     newFile.open(fileName);
     std::vector<double>  b;
-     b = gettotalpotentialenergy(r,Z);
+    b = gettotalpotentialenergy(r,Z);
          for (unsigned int i = 0; i < b.size(); ++i)
              {
                  newFile << b[i];
@@ -469,19 +463,20 @@ void Plasma::normalizeDensityToTotalCharge2()
 
 //the variance is not used to decide th enumber of iteration in the loop
 //n0 density at the center, N number of particles , a b and n paramter of the radial fit.
-void Plasma::loadProfile( double aTotalcharge,  double b, double n,double aTemperature)
+void Plasma::loadProfile(double aTemperature, double aTotalCharge, double n, double b, int numMacro)
 {
+    rings.clear();
     //Check input makes sense
     if (aTemperature <= 0|| n <= 0 || b <= 0)
     {
         throw std::logic_error("Temperature, shape, and scale all need to be positive");
     }
-    if (aTotalcharge *charge < 0)
+    if (aTotalCharge *charge < 0)
     {
         throw std::logic_error("Total charge and the plasma type charge must have the same sign");
     }
     temperature = aTemperature;
-    totalCharge = aTotalcharge;
+    totalCharge = aTotalCharge;
     
     //Declaration and Initialisation of the variables
     double C=0.997;
@@ -490,6 +485,8 @@ void Plasma::loadProfile( double aTotalcharge,  double b, double n,double aTempe
     initialDensity1.setZero(refTrap.Nz * refTrap.Nr + refTrap.Nr);
     initialDensity2.setZero(refTrap.Nz * refTrap.Nr + refTrap.Nr);
     initialDensity3.setZero(refTrap.Nz * refTrap.Nr + refTrap.Nr);
+    initialDensity4.setZero(refTrap.Nz * refTrap.Nr + refTrap.Nr);
+    initialDensity5.setZero(refTrap.Nz * refTrap.Nr + refTrap.Nr);
 
     //Solve Poisson's equation for the charge density
     //Then estimate a thermal equilibrium density from that potential (normalized to totalCharge). Should add a double return here, to get how much it changed
@@ -539,7 +536,7 @@ do{
           initialDensity3.coeffRef(j) = -initialDensity3.coeffRef(j) / epsilon;
         }
     //Solve Poisson's equation using Denstiy1
-    selfPotential = refTrap.solver.solve(initialDensity3);
+    selfPotential = refTrap.solver.solve(initialDensity2);
     estimateDensityProportions2();
     //Then weight them appropriately to match the given profile
     fitDensityProportionToProfile2(n, b);
@@ -553,8 +550,7 @@ do{
         {
             x2 += pow((-epsilon*initialDensity3.coeffRef((refTrap.Nz+1)* indexR + indexZ))-initialDensity4.coeffRef((refTrap.Nz+1)* indexR + indexZ),2)*indexR;
             x += pow((-epsilon*initialDensity3.coeffRef((refTrap.Nz+1)* indexR + indexZ)),2)+pow(initialDensity4.coeffRef((refTrap.Nz+1)* indexR + indexZ),2)*indexR;
-//               initialDensity3.coeffRef((refTrap.Nz+1)* indexR + indexZ) =((C)*(-epsilon*initialDensity1.coeffRef((refTrap.Nz+1)* indexR + indexZ)))
-//                    +(1-C)*initialDensity2.coeffRef((refTrap.Nz+1)* indexR + indexZ);
+
         }
     }
     var2= x2/x;
@@ -581,13 +577,79 @@ do{
        }
      }
 
-    extractInitialDensitybinary("Daniel.dat");
+    extractInitialDensity("Initial Density Estimate.csv");
     var=x2/x;
     for (int j = 0; j < refTrap.Nz * refTrap.Nr + refTrap.Nr; ++j)
           {
             initialDensity1.coeffRef(j) = initialDensity5.coeffRef(j);
           }
- } while (var>1e-1);
+ } while (var>1e-2);
+//Ok, now I have a density grid. I need now to populate macro-particles to match this grid density.
+    //How many particles am I placing at each radial index
+
+std::vector<std::vector<double>> cumulativeAtR;
+    for (int indexR = 0; indexR < refTrap.Nr; ++indexR)
+    {
+        std::vector<double> cumulative;
+        double volume;
+        if (indexR == 0)
+        {
+            volume = PI * refTrap.hz *  refTrap.hr *  refTrap.hr / 4;
+        }
+        else
+        {
+            volume = refTrap.hz *  refTrap.hr * 2 * PI * indexR *  refTrap.hr;
+        }
+        double aChargeR{ 0 };
+        for (int indexZ = 0; indexZ < refTrap.Nz + 1; ++indexZ)
+        {
+            aChargeR += volume * initialDensity5.coeffRef((refTrap.Nz + 1) * indexR + indexZ);
+            cumulative.push_back(aChargeR);
+        }
+        cumulativeAtR.push_back(cumulative);
+    }
+    double futureMacroCharge{ cumulativeAtR[0].back() };
+    for (unsigned int i = 1; i < cumulativeAtR.size(); ++i)
+    {
+        futureMacroCharge += cumulativeAtR[i].back() / (8 * i);
+    }
+    chargeMacro = futureMacroCharge / numMacro;
+    macroChargeDensity = 4 * chargeMacro / (PI * refTrap.hz * refTrap.hr * refTrap.hr);
+    std::vector<int> numAtR;
+    numAtR.push_back((int)round(cumulativeAtR[0].back() / chargeMacro));
+    for (unsigned int i = 1; i < cumulativeAtR.size(); ++i)
+    {
+        numAtR.push_back((int)round(cumulativeAtR[i].back() / (8 * i * chargeMacro)));
+    }
+    //Now I know how many particles I want to place at each radius.
+    //Distribute them using an inverse transform sampling
+    //But without any randomness, just equally space the uniform distribution
+    rings.clear();
+    rings.reserve(numMacro);//this is not exactly the number of particles we will load, but it is close
+    //Use std::random to produce boltzmann distributed speeds
+    //this are simply gaussian with the appropriate std deviation as we are looking at 1 dimension only
+    std::default_random_engine generator;
+    std::normal_distribution<double> distribution(0, sqrt(KB * aTemperature / mass));
+    for (int indexR = 0; indexR < refTrap.Nr; ++indexR)
+    {
+        double deltaQ{ cumulativeAtR[indexR].back() / (numAtR[indexR] + 1) };
+        int currentIndex{ 0 };
+        for (int i = 0; i < numAtR[indexR]; ++i)
+        {
+            double currentInvert{ deltaQ * (i + 1) };
+            while (abs(cumulativeAtR[indexR][currentIndex]) < abs(currentInvert))
+            {
+                currentIndex++;
+            }
+            //The point to invert is between currentIndex and currentIndex - 1
+            //Assume linear interpolation between this two points
+            double invertedPos{ (currentIndex - 1) * refTrap.hz + refTrap.hz / 2 + refTrap.hz * (currentInvert - cumulativeAtR[indexR][currentIndex - 1]) / (cumulativeAtR[indexR][currentIndex] - cumulativeAtR[indexR][currentIndex - 1]) };
+            rings.push_back(MacroRing(indexR, invertedPos, distribution(generator)));
+        }
+    }
+    std::cout << "Loading " << rings.size() << " macro-particles from which " << numAtR[0] << " are at r=0.\n";
+    
+    solvePoisson();
 }
 
 void Plasma::extractInitialDensity(std::string fileName) const
@@ -598,26 +660,67 @@ void Plasma::extractInitialDensity(std::string fileName) const
             newFile << initialDensity5.format(fastFullPrecision);
             newFile.close();
                          }
-void Plasma::extractInitialDensitybinary(std::string fileName) const
+
+
+double Plasma::extractsizeringvector()
+{   double size = rings.size();
+    return size;
+}
+
+void Plasma::extractInitialDensitybinary(std::string fileName)
 {
-    Eigen::IOFormat fastFullPrecision(Eigen::FullPrecision, Eigen::DontAlignCols, "", "\n", "", "", "", "");
-    std::ofstream newFile(fileName, std::ios::out | std::ios::binary);
+    loadOneDUniform(10000, -100 * ePos, 0.01, 0);
+//--------------------------------------------------------------------------------------------------------------------------------------------------
+    std::ofstream newFile;
+    newFile.open(fileName, std::ios::out |  std::ios::binary);
+    
     if(!newFile)
     {
         throw std::logic_error( "Cannot open file!");
     }
-    newFile.open(fileName);
-    for(int i = 0; i < 3; i++)
-    for (int j = 0; j < refTrap.Nz * refTrap.Nr + refTrap.Nr; ++j)
-                 {
-    newFile.write((char *) &initialDensity5.coeffRef(j), sizeof(initialDensity5.coeffRef(j)));  //not sure what I want to write there
-                  }
+    for (const MacroRing& aRing : rings)
+     {
+         double   pos1= aRing.getZ();
+         newFile.write(reinterpret_cast<char*>(&pos1),sizeof(pos1));
+     }
+//  double pos = 100;
+//  char  C='C';
+//  newFile.write((char*)(&C),sizeof(C));
+//  newFile.write(reinterpret_cast<char*>(&pos),sizeof(double));
     newFile.close();
-    
     if(!newFile.good())
     {
-    throw std::logic_error("Error occurred at writing time!");
+        throw std::logic_error("Error occurred at writing time!");
+    }
+//--------------------------------------------------------------------------------------------------------------------------------------------------
+   std:: ifstream Readfile(fileName, std::ios::out | std::ios::binary);
+    if(!Readfile)
+    {
+      throw std::logic_error( "Cannot open file!");
+      
     }
     
+    
+  for (const MacroRing& aRing : rings)   {
+         double   posr;
+         
+        Readfile.read(reinterpret_cast<char*>(&posr),sizeof(double));
+        std::cout << posr;
+   }
+//    char Cr;
+//    Readfile.read((char*)(&Cr),sizeof(Cr));
+//    std::cout << Cr;
+    Readfile.close();
+    
+    if(!Readfile.good())
+    {
+        throw std::logic_error("Error occurred at Readinf time!");
+   }
 }
 
+//    double k = 100;
+//    char buffer[100];
+//    newFile.write (buffer, 100);
+//    newFile.write(reinterpret_cast<char*>(&k),sizeof(k));
+//z
+ 

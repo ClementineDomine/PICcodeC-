@@ -1,8 +1,9 @@
 /*
-Written by: Daniel Duque and Clementine Domine
+Written by: Daniel Duque
 Last modified on 10 Dec 2019
 Declarations for the Electrode and PenningTrap classes
 This file contains a corresponding source file.
+ yes 
 */
 
 #ifndef PENNINGTRAP_HPP
@@ -72,4 +73,4 @@ public:
     double getTotalPhi(int r, int z) const;
     double getTotalPhi(int r, double z) const;
 };
-#endif
+#endif 
